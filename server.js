@@ -5,6 +5,8 @@ const startedAt = Date.now();
 let connectionId = 0;
 let activeConnections = 0;
 const clients = new Set();
+const pendingRequests = new Map(); // id -> { requesters: Set<socket>, timer: Timeout }
+const REQUEST_TIMEOUT_MS = 10000;
 
 // Simple line-oriented protocol:
 // - CLIENT sends lines (\n-terminated). Commands are case-insensitive.
@@ -51,6 +53,46 @@ function handleLine(socket, line) {
       return;
     }
 
+    // handle request_state from mobile: register pending requester and forward request to ESP32s
+    if (obj.type === 'request_state') {
+      const targetId = obj.id != null ? String(obj.id) : undefined;
+      if (!targetId) {
+        socket.write('ERROR missing_id\n');
+        return;
+      }
+
+      // add requester to pendingRequests
+      let entry = pendingRequests.get(targetId);
+      if (!entry) {
+        entry = { requesters: new Set(), timer: null };
+        pendingRequests.set(targetId, entry);
+      }
+      entry.requesters.add(socket);
+      // reset timer
+      if (entry.timer) clearTimeout(entry.timer);
+      entry.timer = setTimeout(() => {
+        try {
+          for (const req of entry.requesters) {
+            try { req.write(JSON.stringify({ type: 'error', id: targetId, error: 'timeout' }) + '\n'); } catch (e) { }
+          }
+        } finally {
+          pendingRequests.delete(targetId);
+        }
+      }, REQUEST_TIMEOUT_MS);
+
+      // forward the original request JSON to all ESP32s
+      const msg = JSON.stringify(obj) + '\n';
+      let forwarded = 0;
+      for (const c of clients) {
+        if (c.deviceType === 'ESP32') {
+          try { c.write(msg); forwarded++; } catch (e) { console.log(new Date().toISOString(), `forward_error to client:${c.clientId}`, e && e.message ? e.message : e); }
+        }
+      }
+      socket.write(`ACK request_state forwarded=${forwarded}\n`);
+      console.log(new Date().toISOString(), `client:${socket.clientId} request_state id=${targetId} forwarded=${forwarded} pending=${entry.requesters.size}`);
+      return;
+    }
+
     // handle toggle: broadcast to all connected ESP32 clients (ignore id)
     if (obj.type === 'toggle') {
       const msg = JSON.stringify(obj) + '\n';
@@ -68,6 +110,30 @@ function handleLine(socket, line) {
       }
       socket.write(`ACK forwarded=${forwarded}\n`);
       console.log(new Date().toISOString(), `client:${socket.clientId} toggle broadcast forwarded=${forwarded}`);
+      return;
+    }
+
+    // handle response messages from ESP32 (or others): forward ack/state to pending requesters or MOBILE clients
+    if ((obj.type === 'ack' || obj.type === 'state') && obj.id != null) {
+      const targetId = String(obj.id);
+      const msg = JSON.stringify(obj) + '\n';
+      let receivers = 0;
+      const entry = pendingRequests.get(targetId);
+      if (entry) {
+        for (const req of entry.requesters) {
+          try { req.write(msg); receivers++; } catch (e) { console.log(new Date().toISOString(), `forward_error to requester`, e && e.message ? e.message : e); }
+        }
+        // keep pendingRequests until timeout to allow multiple responses within window
+      } else {
+        // no pending requesters: broadcast to all MOBILE clients
+        for (const c of clients) {
+          if (c.deviceType === 'MOBILE') {
+            try { c.write(msg); receivers++; } catch (e) { console.log(new Date().toISOString(), `forward_error to mobile:${c.clientId}`, e && e.message ? e.message : e); }
+          }
+        }
+      }
+      socket.write('ACK\n');
+      console.log(new Date().toISOString(), `client:${socket.clientId} ${obj.type} forwarded_to_requesters=${receivers} id=${obj.id}`);
       return;
     }
 
