@@ -36,6 +36,12 @@ function handleLine(socket, line) {
     return;
   }
 
+  if (cmd.toUpperCase() === 'LIST') {
+    const arr = Array.from(clients).map(c => ({ clientId: c.clientId, remote: c.remoteInfo, type: c.deviceType || 'UNKNOWN', id: c.deviceId || null }));
+    try { socket.write(JSON.stringify(arr) + '\n'); } catch (e) { }
+    return;
+  }
+
   // If the line looks like JSON, parse it and handle structured messages
   if (cmd.startsWith('{') && cmd.endsWith('}')) {
     let obj;
@@ -83,9 +89,15 @@ function handleLine(socket, line) {
       // forward the original request JSON to all ESP32s
       const msg = JSON.stringify(obj) + '\n';
       let forwarded = 0;
-      for (const c of clients) {
-        if (c.deviceType === 'ESP32') {
-          try { c.write(msg); forwarded++; } catch (e) { console.log(new Date().toISOString(), `forward_error to client:${c.clientId}`, e && e.message ? e.message : e); }
+      const esp32s = Array.from(clients).filter(c => c.deviceType === 'ESP32');
+      console.log(new Date().toISOString(), `client:${socket.clientId} request_state will forward to esp32_count=${esp32s.length}`, esp32s.map(c => ({ clientId: c.clientId, remote: c.remoteInfo })));
+      for (const c of esp32s) {
+        try {
+          c.write(msg);
+          forwarded++;
+          console.log(new Date().toISOString(), `client:${socket.clientId} forwarded request_state to client:${c.clientId} remote=${c.remoteInfo}`);
+        } catch (e) {
+          console.log(new Date().toISOString(), `forward_error to client:${c.clientId}`, e && e.message ? e.message : e);
         }
       }
       socket.write(`ACK request_state forwarded=${forwarded}\n`);
@@ -172,6 +184,7 @@ const server = net.createServer((socket) => {
   const remote = `${socket.remoteAddress}:${socket.remotePort}`;
   console.log(new Date().toISOString(), `client:${id} connected`, remote, `active=${activeConnections}`);
   socket.clientId = id;
+  socket.remoteInfo = remote;
   // track sockets so we can forward between them
   clients.add(socket);
   socket.setEncoding('utf8');
@@ -204,6 +217,16 @@ const server = net.createServer((socket) => {
     activeConnections = Math.max(0, activeConnections - 1);
     console.log(new Date().toISOString(), 'close', remote, `client:${id}`, 'hadError=', hadError, `active=${activeConnections}`);
   clients.delete(socket);
+  // remove socket from any pendingRequests
+  for (const [key, entry] of pendingRequests.entries()) {
+    if (entry.requesters.has(socket)) {
+      entry.requesters.delete(socket);
+      if (entry.requesters.size === 0) {
+        if (entry.timer) clearTimeout(entry.timer);
+        pendingRequests.delete(key);
+      }
+    }
+  }
   });
 
   socket.on('error', (err) => {
