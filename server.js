@@ -51,14 +51,13 @@ function handleLine(socket, line) {
       return;
     }
 
-    // handle toggle: forward to ESP32 clients matching id (or broadcast if no id)
+    // handle toggle: broadcast to all connected ESP32 clients (ignore id)
     if (obj.type === 'toggle') {
-      const targetId = obj.id != null ? String(obj.id) : undefined;
       const msg = JSON.stringify(obj) + '\n';
       let forwarded = 0;
       for (const c of clients) {
         if (c === socket) continue; // don't echo back to sender
-        if ((c.deviceType === 'ESP32') && (targetId === undefined || String(c.deviceId) === targetId)) {
+        if (c.deviceType === 'ESP32') {
           try {
             c.write(msg);
             forwarded++;
@@ -68,7 +67,7 @@ function handleLine(socket, line) {
         }
       }
       socket.write(`ACK forwarded=${forwarded}\n`);
-      console.log(new Date().toISOString(), `client:${socket.clientId} toggle forwarded=${forwarded} targetId=${targetId || '*'} `);
+      console.log(new Date().toISOString(), `client:${socket.clientId} toggle broadcast forwarded=${forwarded}`);
       return;
     }
 
