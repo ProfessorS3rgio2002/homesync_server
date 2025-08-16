@@ -1,0 +1,13 @@
+{
+  "name": "homesync-online-server",
+  "version": "0.1.0",
+  "description": "Minimal Homesync Online server",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=12"
+  },
+  "license": "MIT"
+}
