@@ -15,6 +15,12 @@ let activeConnections = 0;
 function handleLine(socket, line) {
   const cmd = (line || '').trim();
   if (!cmd) return;
+  // debug: log the received (parsed) command/line
+  try {
+    console.log(new Date().toISOString(), `client:${socket.clientId||'?'} recv_cmd`, cmd);
+  } catch (e) {
+    console.log(new Date().toISOString(), 'recv_cmd', cmd);
+  }
   if (cmd.toUpperCase() === 'HEALTH') {
     const payload = {
       status: 'ok',
@@ -51,6 +57,12 @@ const server = net.createServer((socket) => {
 
   let buffer = '';
   socket.on('data', (chunk) => {
+    // debug: log raw data chunk as received from the socket
+    try {
+      console.log(new Date().toISOString(), `client:${socket.clientId||'?'} data_chunk`, JSON.stringify(chunk));
+    } catch (e) {
+      console.log(new Date().toISOString(), 'data_chunk', String(chunk));
+    }
     buffer += chunk;
     // split into lines
     let idx;
